@@ -2,7 +2,7 @@ use std::str;
 use std::rc::Rc;
 use std::rc::Weak;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 #[cfg(feature = "push")]
 use std::{
     fs::File,
@@ -33,14 +33,26 @@ pub struct Network {
 #[derive(Default)]
 pub struct Network {
     pub nodemap: Rc<RefCell<HashMap<String, Weak<RefCell<Node>>>>>,
+    pub roommap: Rc<RefCell<HashMap<String, HashSet<String>>>>,
+    pub user_to_room: Rc<RefCell<HashMap<String, String>>>,
 }
 
 impl Network {
-    pub fn add_user(&mut self, owner: &str, node: &std::rc::Rc<std::cell::RefCell<Node>>) {
+    pub fn add_user(&mut self, owner: &str, room: &str, node: &std::rc::Rc<std::cell::RefCell<Node>>) {
         if !self.nodemap.borrow().contains_key(owner) {
             node.borrow_mut().owner = Some(owner.into());
             self.nodemap.borrow_mut().insert(owner.to_string(), Rc::downgrade(node));
             println!("Node {:?} connected to the network.", owner);
+
+            // Add user to room
+            let mut rooms = self.roommap.borrow_mut();
+            let users_in_room = rooms.entry(room.into()).or_insert_with(HashSet::new);
+            users_in_room.insert(owner.to_string());
+
+            // Map user to the room
+            self.user_to_room.borrow_mut().insert(owner.to_string(), room.into());
+
+            println!("User '{}' joined room '{}'", owner, room);
         } else {
             println!("{:?} tried to connect, but the username was taken", owner);
             node.borrow().sender.send("The username is taken").ok();
@@ -49,6 +61,18 @@ impl Network {
 
     pub fn remove(&mut self, owner: &str) {
         self.nodemap.borrow_mut().remove(owner);
+
+        // Remove user from room
+        if let Some(room) = self.user_to_room.borrow_mut().remove(owner) {
+            let mut rooms = self.roommap.borrow_mut();
+            if let Some(users) = rooms.get_mut(&room) {
+                users.remove(owner);
+                // Remove room if it's empty
+                if users.is_empty() {
+                    rooms.remove(&room);
+                }
+            }
+        }
     }
 
     pub fn size(&self) -> usize {
