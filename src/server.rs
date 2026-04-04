@@ -82,9 +82,13 @@ impl Handler for Server {
 
         if let Some(&username) = arguments.get("user") {
             if let Some(&room) = arguments.get("room") {
-                self.network
-                    .borrow_mut()
-                    .add_user(username, room, &self.node);
+                if arguments.get("mode") == Some(&"check") {
+                    // skip add_user
+                } else {
+                    self.network
+                        .borrow_mut()
+                        .add_user(username, room, &self.node);
+                }
             } else {
                 return Err(ws::Error {
                     kind: ws::ErrorKind::Protocol,
@@ -115,6 +119,7 @@ impl Handler for Server {
 
     fn on_message(&mut self, msg: Message) -> Result<()> {
         let text_message: &str = msg.as_text()?;
+        println!("{}", text_message);
         let json_message: Value = serde_json::from_str(text_message).unwrap_or(Value::default());
 
         // !!! WARNING !!!
@@ -128,28 +133,42 @@ impl Handler for Server {
         // The words below are protcol specific.
         // Thus a client should make sure to use a viable protocol
         let ret = match protocol {
+            Some("room-exists") => match json_message["room"].as_str() {
+                Some(room) => {
+                    let exists = self.network.borrow().roommap.borrow().contains_key(room);
+
+                    let response = json!({
+                        "type": "ROOM_EXISTS_RESPONSE",
+                        "room": room,
+                        "exists": exists
+                    });
+
+                    self.node.borrow().sender.send(response.to_string())
+                }
+                None => self.node.borrow().sender.send("No field 'room' provided"),
+            },
             Some("one-to-all") => self.node.borrow().sender.broadcast(text_message),
             Some("one-to-self") => self.node.borrow().sender.send(text_message),
             Some("one-to-room") => match json_message["room"].as_str() {
-                Some(room) => {
-                    match self.network.borrow().roommap.borrow().get(room) {
-                        Some(users) => {
-                            for user in users {
-                                if let Some(node_weak) = self.network.borrow().nodemap.borrow().get(user) {
-                                    if let Some(node) = node_weak.upgrade() {
-                                        node.borrow().sender.send(text_message).ok();
-                                    }
+                Some(room) => match self.network.borrow().roommap.borrow().get(room) {
+                    Some(users) => {
+                        for user in users {
+                            if let Some(node_weak) =
+                                self.network.borrow().nodemap.borrow().get(user)
+                            {
+                                if let Some(node) = node_weak.upgrade() {
+                                    node.borrow().sender.send(text_message).ok();
                                 }
                             }
-                            Ok(())
                         }
-                        None => self
-                            .node
-                            .borrow()
-                            .sender
-                            .send(format!("Could not find a room with the name {}", room)),
+                        Ok(())
                     }
-                }
+                    None => self
+                        .node
+                        .borrow()
+                        .sender
+                        .send(format!("Could not find a room with the name {}", room)),
+                },
                 None => self.node.borrow().sender.send("No field 'room' provided"),
             },
             Some("one-to-one") => match json_message["endpoint"].as_str() {
